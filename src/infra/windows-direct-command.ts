@@ -2,53 +2,6 @@ import path from "node:path";
 import { isShellWrapperInvocation } from "./shell-wrapper-resolution.js";
 
 const CMD_OPERATOR_CHARS = /[&|<>^()\r\n]/;
-const CMD_INTERNAL_COMMANDS = new Set([
-  "assoc",
-  "break",
-  "call",
-  "cd",
-  "chdir",
-  "cls",
-  "color",
-  "copy",
-  "date",
-  "del",
-  "dir",
-  "dpath",
-  "echo",
-  "endlocal",
-  "erase",
-  "exit",
-  "for",
-  "ftype",
-  "goto",
-  "if",
-  "keys",
-  "md",
-  "mkdir",
-  "mklink",
-  "move",
-  "path",
-  "pause",
-  "popd",
-  "prompt",
-  "pushd",
-  "rd",
-  "rem",
-  "ren",
-  "rename",
-  "rmdir",
-  "set",
-  "setlocal",
-  "shift",
-  "start",
-  "time",
-  "title",
-  "type",
-  "ver",
-  "verify",
-  "vol",
-]);
 
 function isArgumentSeparator(ch: string | undefined): boolean {
   return ch === " " || ch === "\t";
@@ -172,32 +125,59 @@ export function splitWindowsDirectCommandLine(rawCommand: string): string[] | nu
   return [head.program, ...runtimeArgs];
 }
 
-function isCmdInternalCommand(executable: string): boolean {
-  const name = path.win32.basename(executable).toLowerCase();
-  const leadingWord = /^[a-z]+/.exec(name)?.[0];
-  if (!leadingWord || !CMD_INTERNAL_COMMANDS.has(leadingWord)) {
-    return false;
+const NATIVE_EXECUTABLE_SUFFIX = /\.(exe|com)$/;
+
+function countPercentSigns(command: string): number {
+  let count = 0;
+  for (let index = 0; index < command.length; index += 1) {
+    if (command[index] === "%") {
+      count += 1;
+    }
   }
-  const next = name[leadingWord.length];
-  return next === undefined || !/[a-z0-9]/.test(next);
+  return count;
 }
 
-function isBatchScript(executable: string): boolean {
+// cmd.exe resolves a bare name through PATH and PATHEXT, so `mytool` can land on
+// `mytool.cmd`. Classifying only the submitted token would admit an allowlisted batch
+// shim as a direct argv, and resolveSafeChildProcessInvocation would then reinsert
+// cmd.exe after policy had already authorized a shell-free launch. Requiring an
+// absolute native image keeps the launched transport identical to the authorized one.
+function isNativeExecutableTarget(executable: string): boolean {
+  if (!path.win32.isAbsolute(executable)) {
+    return false;
+  }
+  // Win32 drops trailing dots and spaces when it opens the image, and a stream suffix
+  // such as `tool.exe:alt` names a different target, so match the canonical name only.
   const name = path.win32
     .basename(executable)
     .toLowerCase()
     .replace(/[. ]+$/, "");
-  return /\.(cmd|bat)(:|$)/.test(name);
+  return NATIVE_EXECUTABLE_SUFFIX.test(name);
+}
+
+// analyzeArgvCommand drops empty and whitespace-only arguments, and the node builds an
+// automatically allowlisted launch from that filtered analysis. A direct argv carrying
+// a blank argument would therefore run a command the approval never saw, so the direct
+// path declines it and the shell transport keeps the argument.
+function hasBlankArgument(argv: string[]): boolean {
+  return argv.slice(1).some((argument) => argument.trim().length === 0);
 }
 
 export function resolveWindowsDirectCommandArgv(command: string): string[] | null {
-  const argv = splitWindowsDirectCommandLine(command.trim());
+  const trimmed = command.trim();
+  // cmd.exe expands %VAR% even inside double quotes, and an expansion needs a pair of
+  // percent signs. Leaving those commands on the shell transport preserves the meaning
+  // they had before direct execution existed.
+  if (countPercentSigns(trimmed) >= 2) {
+    return null;
+  }
+  const argv = splitWindowsDirectCommandLine(trimmed);
   const executable = argv?.[0];
   if (
     !argv ||
     !executable ||
-    isCmdInternalCommand(executable) ||
-    isBatchScript(executable) ||
+    !isNativeExecutableTarget(executable) ||
+    hasBlankArgument(argv) ||
     isShellWrapperInvocation(argv)
   ) {
     return null;

@@ -8,8 +8,8 @@ describe("splitWindowsDirectCommandLine", () => {
   it.each([
     ["C:\\bin\\tool.exe a b", ["C:\\bin\\tool.exe", "a", "b"]],
     [
-      '"C:\\Program Files\\Tool\\tool.exe" "deux mots é" x',
-      ["C:\\Program Files\\Tool\\tool.exe", "deux mots é", "x"],
+      '"C:\\Program Files\\Tool\\tool.exe" "deux mots Ã©" x',
+      ["C:\\Program Files\\Tool\\tool.exe", "deux mots Ã©", "x"],
     ],
     ["  git\tstatus   --short  ", ["git", "status", "--short"]],
     ['tool "" last', ["tool", "", "last"]],
@@ -96,7 +96,6 @@ describe("resolveWindowsDirectCommandArgv", () => {
     "set NAME",
     "type file.txt",
     "start notepad.exe",
-    "C:\\tools\\copy.exe a b",
   ])("keeps the cmd.exe internal command %j on the shell path", (command) => {
     expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
   });
@@ -120,10 +119,58 @@ describe("resolveWindowsDirectCommandArgv", () => {
     expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
   });
 
-  it.each(["director.exe --version", "settings.exe", "typescript-check.exe"])(
-    "does not mistake %j for an internal command",
+  // A bare name resolves through PATH and PATHEXT on the node, so it can land on a batch
+  // shim that reintroduces cmd.exe after policy authorized a shell-free launch.
+  it.each([
+    "director.exe --version",
+    "settings.exe",
+    "typescript-check.exe",
+    "tool.exe --version",
+    "C:relative\\tool.exe",
+  ])("keeps the unresolved name %j on the shell path", (command) => {
+    expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
+  });
+
+  it.each([
+    "C:\\tools\\director.exe --version",
+    "C:\\tools\\settings.exe",
+    "C:\\tools\\typescript-check.exe",
+    "C:\\tools\\copy.exe a b",
+    "C:\\tools\\legacy.com",
+  ])("admits the absolute native image %j", (command) => {
+    expect(resolveWindowsDirectCommandArgv(command)).not.toBeNull();
+  });
+
+  it.each([
+    "C:\\tools\\tool.exe:alt arg",
+    "C:\\tools\\tool.bin",
+    "C:\\tools\\tool.exe.txt",
+  ])("keeps the non-native image %j on the shell path", (command) => {
+    expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
+  });
+
+  // cmd.exe expands %VAR% even inside double quotes, so a percent pair stays on the shell.
+  it.each([
+    'C:\\tools\\tool.exe "%TEMP%\\output.txt"',
+    "C:\\tools\\tool.exe %PATH%",
+    "C:\\tools\\tool.exe %A% %B%",
+  ])("keeps the expansion-dependent command %j on the shell path", (command) => {
+    expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
+  });
+
+  it("admits a lone percent sign that cannot expand", () => {
+    expect(resolveWindowsDirectCommandArgv("C:\\tools\\tool.exe 50%")).toEqual([
+      "C:\\tools\\tool.exe",
+      "50%",
+    ]);
+  });
+
+  // analyzeArgvCommand drops blank arguments, so an allowlisted launch would not carry
+  // the argv the approval saw.
+  it.each(['C:\\tools\\tool.exe "" next', 'C:\\tools\\tool.exe "   " next'])(
+    "keeps the blank-argument command %j on the shell path",
     (command) => {
-      expect(resolveWindowsDirectCommandArgv(command)).not.toBeNull();
+      expect(resolveWindowsDirectCommandArgv(command)).toBeNull();
     },
   );
 });
