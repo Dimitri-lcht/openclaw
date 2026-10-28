@@ -11,6 +11,7 @@ import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization
 import { resolveUnpinnedAutoApprovalEligibility } from "../infra/exec-auto-approval-eligibility.js";
 import { resolveExecWrapperTrustPlan } from "../infra/exec-wrapper-trust-plan.js";
 import { buildNodeShellCommand } from "../infra/node-shell.js";
+import { formatExecCommand } from "../infra/system-run-command.js";
 
 // Mirrors the node's shell-free branch of evaluateSystemRunAllowlist: analyze the argv, then
 // evaluate it with evaluateExecAllowlist. The node takes platform and env from its own
@@ -31,6 +32,13 @@ export async function evaluateNodeDirectArgvAllowlist(params: {
     env: params.env,
     platform: params.platform,
   });
+  // analyzeArgvCommand renders segment text with argv.join(" "), while the prepared node
+  // command for a direct argv is canonical formatExecCommand text. A quoted executable
+  // path or an argument containing spaces makes the two strings differ, so the binding
+  // comparison in analyzeNodeApprovalRequirement leaves autoReviewArgv undefined and skips
+  // the reviewer on an allowlist miss. Carry the canonical display identity here; the argv
+  // arrays stay exactly as prepared, so matching and launch still see every argument.
+  const canonicalRaw = formatExecCommand(params.argv);
   return {
     ...evaluateExecAllowlist({
       analysis,
@@ -42,7 +50,7 @@ export async function evaluateNodeDirectArgvAllowlist(params: {
       trustedSafeBinDirs: params.trustedSafeBinDirs,
     }),
     analysisOk: analysis.ok,
-    segments: analysis.segments,
+    segments: analysis.segments.map((segment) => ({ ...segment, raw: canonicalRaw })),
   };
 }
 
